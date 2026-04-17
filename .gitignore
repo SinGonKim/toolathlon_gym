@@ -10,6 +10,8 @@ node_modules/
 # Runtime outputs
 dumps/
 _test_workspace/
+.env
+.env.local
 
 # OS
 .DS_Store

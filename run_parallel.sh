@@ -1,18 +1,30 @@
 #!/bin/bash
-# Fully parallel benchmark: every task gets its own PostgreSQL + agent container.
-# Concurrency is controlled by a semaphore (max N tasks running at once).
+# Fully parallel benchmark runner for OpenAI / OpenRouter models.
+# Each task gets its own PostgreSQL + agent container.
 #
 # Usage:
-#   ./run_fully_parallel.sh <max_concurrent> [task1 task2 ...]
-#   ./run_fully_parallel.sh 10                          # all tasks, 10 at a time
-#   ./run_fully_parallel.sh 5 task-a task-b task-c      # specific tasks
+#   ./run_parallel.sh <max_concurrent> [task1 task2 ...]
+#   ./run_parallel.sh 10
+#   ./run_parallel.sh 5 task-a task-b task-c
 #
-# Environment variables:
-#   MODEL / PROVIDER / MAX_STEPS / IMAGE / GEMINI_API_KEY / MODEL_API_KEY
-#   MODEL_PLATFORM / MODEL_API_URL
+# Configuration:
+#   Values can be exported in the shell or placed in .env at the repo root.
+#   Required: MODEL / PROVIDER / MODEL_API_KEY
+#   Optional: MODEL_PROVIDER / MODEL_PLATFORM / MODEL_API_URL / MAX_STEPS / IMAGE
 
-set -uo pipefail
+set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
 
 # ─── Arguments ────────────────────────────────────────────────────────────────
 MAX_CONCURRENT="${1:?Usage: $0 <max_concurrent> [task1] [task2] ...}"
@@ -26,13 +38,22 @@ else
 fi
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-MODEL="${MODEL:-gemini-3-flash-preview}"
-PROVIDER="${PROVIDER:-gemini}"
+MODEL="${MODEL:?MODEL must be set via environment or .env}"
+PROVIDER="${PROVIDER:?PROVIDER must be set via environment or .env}"
 MAX_STEPS="${MAX_STEPS:-100}"
-IMAGE="${IMAGE:-toolathlon_pack-toolathlon:latest}"
+IMAGE="${IMAGE:-toolathlon-pack:latest}"
+MODEL_PROVIDER="${MODEL_PROVIDER:-$PROVIDER}"
+MODEL_PLATFORM="${MODEL_PLATFORM:-$PROVIDER}"
+MODEL_API_KEY="${MODEL_API_KEY:?MODEL_API_KEY must be set via environment or .env}"
+MODEL_API_URL="${MODEL_API_URL:-}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="benchmark_logs/fully_parallel_${TIMESTAMP}"
 DOCKER=$(which docker 2>/dev/null || echo "/usr/local/bin/docker")
+
+if [[ "$PROVIDER" != "openai" && "$PROVIDER" != "openrouter" ]]; then
+    echo "[error] PROVIDER must be 'openai' or 'openrouter' (got: $PROVIDER)"
+    exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -41,8 +62,11 @@ echo "Fully Parallel Benchmark"
 echo "  Max concurrent: $MAX_CONCURRENT"
 echo "  Total tasks:    ${#TASKS[@]}"
 echo "  Model:          $PROVIDER/$MODEL"
+echo "  Platform:       $MODEL_PLATFORM"
+echo "  Provider key:   $MODEL_PROVIDER"
 echo "  Max steps:      $MAX_STEPS"
 echo "  Image:          $IMAGE"
+echo "  Env file:       $ENV_FILE"
 echo "  Log dir:        $LOG_DIR"
 echo "============================================="
 
@@ -101,12 +125,8 @@ cleanup_all() {
 trap cleanup_all EXIT
 
 # ─── Export helpers for subshells ─────────────────────────────────────────────
-export MODEL PROVIDER MAX_STEPS IMAGE DOCKER LOG_DIR SUMMARY SUMMARY_LOCK CONTAINER_LIST CONTAINER_LIST_LOCK
-export GEMINI_API_KEY="${GEMINI_API_KEY:-}"
-export MODEL_API_KEY="${MODEL_API_KEY:-}"
-export MODEL_PLATFORM="${MODEL_PLATFORM:-}"
-export MODEL_API_URL="${MODEL_API_URL:-}"
-export MODEL_PROVIDER="${MODEL_PROVIDER:-}"
+export PROJECT_ROOT MODEL PROVIDER MAX_STEPS IMAGE DOCKER LOG_DIR SUMMARY SUMMARY_LOCK CONTAINER_LIST CONTAINER_LIST_LOCK
+export MODEL_API_KEY MODEL_PLATFORM MODEL_API_URL MODEL_PROVIDER ENV_FILE
 export -f append_summary register_container
 
 # ─── Run a single task with full isolation ────────────────────────────────────
@@ -176,7 +196,6 @@ conn.close()
 
     # --- Start agent container ---
     local ENV_ARGS=()
-    [ -n "$GEMINI_API_KEY" ]  && ENV_ARGS+=("-e" "GEMINI_API_KEY=$GEMINI_API_KEY")
     [ -n "$MODEL_API_KEY" ]   && ENV_ARGS+=("-e" "MODEL_API_KEY=$MODEL_API_KEY")
     [ -n "$MODEL_PLATFORM" ]  && ENV_ARGS+=("-e" "MODEL_PLATFORM=$MODEL_PLATFORM")
     [ -n "$MODEL_API_URL" ]   && ENV_ARGS+=("-e" "MODEL_API_URL=$MODEL_API_URL")
@@ -193,7 +212,7 @@ conn.close()
         -e PGDATABASE=toolathlon_gym \
         -e LOCAL_SERVERS_PATH=/opt/local_servers \
         -e PYTHON_BIN=/opt/venv/bin/python3 \
-        -e MODEL_PROVIDER="$PROVIDER" \
+        -e MODEL_PROVIDER="$MODEL_PROVIDER" \
         "${ENV_ARGS[@]}" \
         -v "$(pwd):/workspace" \
         -w /workspace \
@@ -332,4 +351,19 @@ PYEOF
 echo ""
 echo "Summary CSV: $SUMMARY"
 echo "Task logs:   $LOG_DIR/<task>.log"
+
+python3 scripts/export_benchmark_results.py \
+    --summary "$SUMMARY" \
+    --log-dir "$LOG_DIR" \
+    --provider "$PROVIDER" \
+    --model-name "$MODEL" \
+    --model-platform "$MODEL_PLATFORM" \
+    --model-provider "$MODEL_PROVIDER" \
+    --max-steps "$MAX_STEPS" \
+    --max-concurrent "$MAX_CONCURRENT" \
+    --image "$IMAGE"
+
+echo "JSON output: output/raw/*.json"
+echo "Summary JSON: output/summary/benchmark_summary.json"
+echo "Manifest JSON: output/metadata/run_manifest.json"
 echo "Done."

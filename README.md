@@ -62,65 +62,67 @@ bash scripts/test_containerized.sh
 For large-scale evaluation, use `run_parallel.sh` to run multiple tasks concurrently. Each task gets its own fully isolated environment (dedicated PostgreSQL + agent container + Docker network), so there is no shared state between tasks.
 
 ```bash
-# Run all 503 tasks, up to 10 running concurrently
-GEMINI_API_KEY=AIza-xxx \
-MODEL=gemini-3-flash-preview \
-PROVIDER=gemini \
-IMAGE=toolathlon-pack:latest \
-bash run_parallel.sh 10
+# 1) Copy the template and fill in real values
+cp .env.example .env
 
-# Run specific tasks, up to 5 concurrently
-MODEL_PLATFORM=openai_compatible \
-MODEL_NAME=claude-sonnet-4-5 \
-MODEL_API_KEY=sk-xxx \
-MODEL_API_URL=https://aihubmix.com/v1 \
-IMAGE=toolathlon-pack:latest \
+# 2) Run all 503 tasks on official OpenAI with GPT-5.4
+bash run_parallel.sh 5
+
+# 3) Run only selected tasks
 bash run_parallel.sh 5 howtocook-meal-plan-gcal wc-sales-tax-summary yf-stock-volatility-terminal
+
+# 4) Submit the same benchmark through Slurm
+sbatch scripts/run_parallel.slurm 5
 ```
 
 Concurrency is controlled by a FIFO-based semaphore — the first argument sets the maximum number of tasks running at the same time. Results are collected into a summary CSV at `benchmark_logs/fully_parallel_<timestamp>/summary.csv`, with per-task logs in the same directory.
 
+After each parallel run, the repo also exports JSON artifacts to `output/`:
+
+- `output/raw/<task>.json`: copy of the task's `eval_res.json` when available
+- `output/summary/benchmark_summary.json`: benchmark-level JSON summary with per-task status
+- `output/metadata/run_manifest.json`: run configuration without exposing secret API key values
+
 | Environment variable | Default | Description |
 |---|---|---|
-| `MODEL` | `gemini-3-flash-preview` | Model name |
-| `PROVIDER` | `gemini` | Provider key (`gemini`, `openai`, `anthropic`, etc.) |
+| `MODEL` | — | Model name |
+| `PROVIDER` | — | Provider key (`openai` or `openrouter`) |
+| `MODEL_PROVIDER` | `PROVIDER` | Provider key passed to `main.py` |
+| `MODEL_PLATFORM` | `PROVIDER` | CAMEL platform override |
 | `MAX_STEPS` | `100` | Max agent steps per task |
-| `IMAGE` | `toolathlon_pack-toolathlon:latest` | Docker image to use |
-| `GEMINI_API_KEY` | — | API key for Gemini provider |
-| `MODEL_API_KEY` | — | API key for other providers |
-| `MODEL_PLATFORM` | — | Platform override (e.g. `openai_compatible`) |
-| `MODEL_API_URL` | — | Base URL for OpenAI-compatible endpoints |
+| `IMAGE` | `toolathlon-pack:latest` | Docker image to use |
+| `MODEL_API_KEY` | — | API key for OpenAI or OpenRouter |
+| `MODEL_API_URL` | — | Optional base URL override |
+| `ENV_FILE` | `.env` | Alternate env file path for `run_parallel.sh` |
 
 ---
 
 ## Model Provider Reference
 
-Set `MODEL_PLATFORM` to one of the following:
+`run_parallel.sh` is intentionally restricted to OpenAI and OpenRouter:
 
 | `MODEL_PLATFORM` | Description | Required env vars |
 |---|---|---|
-| `openai_compatible` | Any OpenAI-compatible endpoint (aihubmix, OpenRouter, local, …) | `MODEL_API_KEY`, `MODEL_API_URL` |
 | `openai` | Official OpenAI API | `MODEL_API_KEY` |
-| `anthropic` | Official Anthropic API | `MODEL_API_KEY` |
-| `gemini` | Official Google Gemini API | `MODEL_API_KEY` |
+| `openrouter` | OpenRouter API | `MODEL_API_KEY` |
 
 **Examples:**
 
 ```bash
-# Claude via aihubmix
-MODEL_PLATFORM=openai_compatible MODEL_NAME=claude-sonnet-4-5 \
-MODEL_API_KEY=sk-xxx MODEL_API_URL=https://aihubmix.com/v1 \
-bash scripts/run_containerized.sh canvas-enrollment-notion
+# OpenAI via .env
+MODEL=gpt-5.4
+PROVIDER=openai
+MODEL_PROVIDER=openai
+MODEL_PLATFORM=openai
+MODEL_API_KEY=sk-proj-xxx
 
-# GPT-5.2 via official OpenAI
-MODEL_PLATFORM=openai MODEL_NAME=gpt-5.2 \
-MODEL_API_KEY=sk-proj-xxx \
-bash scripts/run_containerized.sh howtocook-event-catering-excel-word
-
-# Gemini 3 Flash via official Google
-MODEL_PLATFORM=gemini MODEL_NAME=gemini-3-flash-preview \
-MODEL_API_KEY=AIza-xxx \
-bash scripts/run_containerized.sh sf-hr-attrition-gcal
+# OpenRouter via .env
+MODEL=anthropic/claude-sonnet-4
+PROVIDER=openrouter
+MODEL_PROVIDER=openrouter
+MODEL_PLATFORM=openrouter
+MODEL_API_KEY=sk-or-v1-xxx
+# MODEL_API_URL=https://openrouter.ai/api/v1
 ```
 
 ---
