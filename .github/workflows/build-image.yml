@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Override image tag (default: latest)
+        description: "Override image tag (default: latest)"
         required: false
         default: latest
 
